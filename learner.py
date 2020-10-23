@@ -4,6 +4,7 @@ TEAM E: Aishee Mukherji, Eric Odoom, Etienne Richart
 '''
 from switchyard.lib.userlib import *
 import datetime
+import time
 
 class Address():
     def __init__(self, addr, port, timestamp):
@@ -12,9 +13,13 @@ class Address():
         self.timestamp = timestamp
 
     def __str__(self):
-        return "{} on port {}. Traffic: {}".format(self.addr, self.port, self.timestamp)
+        return "{} on port {}. Traffic: {}. Microsecond {}".format(self.addr, self.port, self.timestamp, (datetime.datetime.now() - self.timestamp).microseconds)
 
 addrs = []
+tableSize = 10
+#timeout in microseconds
+staleTime = 1000
+
 
 def learnAddress(src, input_port):
     global addrs
@@ -25,7 +30,7 @@ def learnAddress(src, input_port):
         nextAddress.timestamp = datetime.datetime.now()
     else:
         addrs.sort(key=lambda x: x.timestamp, reverse = True)
-        addrs = addrs[:10]
+        addrs = addrs[:tableSize - 1]
         addrs.append(Address(src, input_port, datetime.datetime.now()))
     log_debug("Learn: {}".format(addrs))
 
@@ -42,7 +47,15 @@ def getAddress(dest):
     
 def removeStale():
     global addrs
-    for x in range(len(addrs)):
-        if (datetime.datetime.now() - addrs[x].timestamp).seconds > 30:
-            addrs.pop(x)
-            
+    def filt(timedelta):
+        if (datetime.datetime.now() - timedelta.timestamp).microseconds > staleTime:
+            return False
+        else:
+            return True
+    addrs = list(filter(filt, addrs))
+    
+def debug(count):
+    global addrs
+    print('Debug '+ str(count) + ': ' + str(datetime.datetime.now()) + ': ')
+    [print(i) for i in addrs]
+    print()

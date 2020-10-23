@@ -4,12 +4,13 @@ TEAM E: Aishee Mukherji, Eric Odoom, Etienne Richart
 Imports Learning Switch
 '''
 import learner
+import time
 from switchyard.lib.userlib import *
 
 def main(net):
     my_interfaces = net.interfaces()
     mymacs = [intf.ethaddr for intf in my_interfaces]
-
+    count = 0
     while True:
         try:
             timestamp,input_port,packet = net.recv_packet()
@@ -32,4 +33,6 @@ def main(net):
                         net.send_packet(intf.name, packet)
             else:
                 net.send_packet(output_port, packet)
+        count += 1
+        learner.debug(count)
     net.shutdown()
