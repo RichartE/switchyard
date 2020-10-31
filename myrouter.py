@@ -68,45 +68,33 @@ class Router(object):
         self.myips = set()
         self.layer2_forward_list = []
         self.forwarding_table = []
+        # Saves the original packet and egress name(router-eth01)
         self.cache ={}
+        # Every arp packet is added to the list as well as the ArpPending for the object and egress name(router-eth01)
         self.arpwaitlist = []
-
-        #for intf in net.interfaces():
-        #    self.interfaces[intf.name] = intf
-        #    for ipa in intf.ipaddrs:
-        #        self.arptable[ipa.ip] = intf.ethaddr
-        #        self.myips.add(ipa.ip)
-        #    self.mymacs.add(intf.ethaddr)
         
         for intf in net.interfaces():
-                   print('intf: ' + str(intf))
-                   
                    self.interfaces[intf.name] = intf
                    self.mymacs.add(intf.ethaddr)
                    self.arptable[intf.ipaddr] = intf.ethaddr
                    self.myips.add(intf.ipaddr)
                    
+                   # Adds the entries from net.interfaces to the forwarding table
                    nexthop = intf.ipaddr
                    prefix = IPv4Address(int(IPv4Address(nexthop)) & int(IPv4Address(intf.netmask)))
                    mask = IPv4Address(intf.netmask)
-                   
                    name = intf.name
                    self.forwarding_table.append([str(prefix), str(mask), str(nexthop), str(name)])
 
         log_debug("My IPs: {}".format(self.myips))
 
-        # *** You will need to add more code to this constructor ***
-
-        # TODO: routing table
-        # helpful ref: https://jsommers.github.io/switchyard/_modules/switchyard/lib/testing.html#TestScenario.add_file
-        # static_forwarding_table = net._support_files["forwarding_table.txt"].splitlines()
+        # Adds the entries from the file to the forwarding table
         with open("forwarding_table.txt", 'r') as static_forwarding_table:
             static_entry = static_forwarding_table.readlines()
             for i in static_entry:
                 entry = i.split()
                 self.forwarding_table.append(entry)
-        print('Table:')
-        print(self.forwarding_table)
+       
 
     def update_arp_table(self, ipaddr, macaddr):
         '''
@@ -115,9 +103,6 @@ class Router(object):
         '''
         log_debug("Adding {} -> {} to ARP table".format(ipaddr, macaddr))
         self.arptable[ipaddr] = macaddr
-        print('?????????????????????????????????????')
-        print('IP: ' + str(ipaddr) + ' MAC: ' + str(macaddr))
-        print('ArpTabe: ' + str(self.arptable))
 
     def arp_responder(self, dev, eth, arp):
         '''
@@ -126,30 +111,22 @@ class Router(object):
         '''
         # learn what we can from the arriving ARP packet
         if arp.senderprotoaddr != IPv4Address("0.0.0.0") and arp.senderhwaddr != EthAddr("ff:ff:ff:ff:ff:ff"):
-            print('update table')
             self.update_arp_table(arp.senderprotoaddr, arp.senderhwaddr)
 
         # if this is a request, reply if the targetprotoaddr is one of our addresses
         if arp.operation == ArpOperation.Request:
-            print('What???')
             log_debug("ARP request for {}".format(str(arp)))
             if arp.targetprotoaddr in self.myips:
                 log_debug("Got ARP for an IP address we know about")
                 arpreply = create_ip_arp_reply(self.arptable[arp.targetprotoaddr], eth.src, arp.targetprotoaddr, arp.senderprotoaddr)
                 self.update_arp_table(arp.sendpkt.payload.protosrc, pkt.payload.hwsrc)
                 self.net.send_packet(dev, arpreply)
+        # if this is a reply to a router request construct a packet to send to the destination
         elif arp.targetprotoaddr in self.myips:
-            print('yahnada')
             self.arpwaitlist.clear()
-            for key in self.cache.keys():
-                print('key: ' + str(key).strip())
-                print('keycomparison: ' + str(arp.targethwaddr).strip())
-                
-                print(str(key == arp.targethwaddr))
-                print()
-            print('Cache: ' + str(self.cache[arp.targethwaddr]))
+            # use the cache to get the proper egress and the original packet
+            # the cache key is the router's ethernet address since that is the only constant I could find
             packet, egress = self.cache.pop(arp.targethwaddr, Packet())
-            print('packet: ' + str(packet))
             eth = Ethernet()
             eth.src = EthAddr(arp.targethwaddr)
             eth.dst = EthAddr(arp.senderhwaddr)
@@ -161,33 +138,24 @@ class Router(object):
             self.net.send_packet(egress, p)
 
     def router_main(self):
-        count = 1
         while True:
             try:
-                print('----------------------------------------------------------------------------')
                 timestamp,dev,pkt = self.net.recv_packet(timeout=1.0)
-                print(str(count) + ':')
-                count += 1
-                print(pkt)
-                print('startlen: ' + str(len(self.layer2_forward_list)))
-                print('ArpTable: '+ str(self.arptable))
             except NoPackets:
+                #if there is a time out but no ARP pending then simply continue
+                if len(self.arpwaitlist) == 0:
+                    continue
                 log_debug("Timeout waiting for packets")
-                print('TIME')
-                now = time.time
-                print(str(self.arpwaitlist))
+                now = time.time()
+                #check the pending ARP to see if you should resend
                 thisarp = self.arpwaitlist[0]
-                print(thisarp.nexthop)
-                print('YYYYY')
                 if self.arpwaitlist[0].can_try_again(now):
                     a = self.arpwaitlist[1]
-                    print(1)
                     b = self.arpwaitlist[2]
-                    self.arpwaitlist[0].add_attempt(now)
-                    print('SENDING')
+                    self.arpwaitlist[0].add_attempt()
                     self.net.send_packet(a, b)
+                # if the router decide to give up on the ARP drop the arp from the list
                 elif self.arpwaitlist[0].giveup(now):
-                    print('gaveup')
                     self.arpwaitlist.clear()
                     log_warn("Giving up on ARPing {}".format(str(thisarp.nexthop)))
                 continue
@@ -201,119 +169,60 @@ class Router(object):
                 
             eth = pkt.get_header(Ethernet)
 
+            # if it is an ARP packet go to ARP resonse
             if eth.ethertype == EtherType.ARP:
-                print('yah')
                 log_debug("Received ARP packet: {}".format(str(pkt)))
                 arp = pkt.get_header(Arp)
                 self.arp_responder(dev, eth, arp)
-
+            
+            # if it is an IP packet figure out who it is destined for and attempt to deliver it
             elif eth.ethertype == EtherType.IP:
                 log_debug("Received IP packet: {}".format(str(pkt)))
-                print('BYE')
-                # TODO: process the IP packet and send out the correct interface
+                # Check that the packet is destined for the router's interface
                 if pkt[0].dst in self.mymacs:
+                    # Check that the packet is not for the router
                     if pkt[1].dst in self.myips:
-                        print(pkt)
-                        print('one')
                         log_info ("Packet destined to the hub itself.")
                     else:
-                        print('two')
+                        # begin matching using forwarding table
                         best_match = -1
                         best_entry = []
                         destaddr = pkt[1].dst
-                        # TODO: decrement TTL
+                        # decrement TTL
                         pkt.get_header(IPv4).ttl -= 1
-                        print('t')
-                        print('packet: ' + str(pkt))
+                        # find best match to forward packet
                         for entry in self.forwarding_table:
-                            print()
-                            print(entry)
-                            print()
+                            # if the next hop is the destination than the best match is found
                             if entry[2] == str(destaddr):
-                                print('Special')
                                 best_match = 100
                                 best_entry = entry
                                 break
-                            print('y')
                             prefixnet = IPv4Network(entry[0]+'/'+entry[1])
-                            print('we')
                             matches = destaddr in prefixnet
                             
                             dstt = IPv4Address(str(destaddr))
-                            print(str(dstt))
                             prefixx = IPv4Address(entry[0])
-                            print(str(prefixx))
                             answ = ((int(prefixx) & int(dstt)) == int(prefixx))
-                            print('AHHH:' + str(answ))
-                            
-                            print('ROUTER: ' + entry[3])
-                            print('match: '  +str(matches))
-                            print('destination: ' + str(destaddr))
-                            print('prefixnet: ' + str(prefixnet))
-                            print('prefixlen: ' + str(prefixnet.prefixlen))
             
                             # > 1 matches, the longest prefix match should be used
                             if matches and prefixnet.prefixlen > best_match:
                                 best_match = prefixnet.prefixlen
                                 best_entry = entry
-                        print()
-                        print('BEST ENTRY:')
-                        print(best_entry)
-                        print()
-                        print()
-                        print('ALL Entries:')
-                        for ent in self.forwarding_table:
-                            print(ent)
-                        print()
-                        print()
-                        if best_match == -1: # if there is no match, drop packet
-                            print('good')
+                                
+                        # if there is no match, drop packet
+                        if best_match == -1:
                             log_info ("There is no match in the table.")
-                        else: # TODO: correct destination port
-                            print('HI')
-                            # 1. How are we using the ArpPending object?
-                            # TODO: process_arp_pending(), make_arp_request()
+                        # Create ArpPendingObject with best match
+                        else:
                             arp_interface = best_entry[3]
                             next_hop = best_entry[2]
-                            print(pkt)
                             packet = (pkt[IPv4] + pkt[ICMP])
-                            print('jo')
                             arp_thing = ArpPending(arp_interface, next_hop, packet)
-                            print('you shall not pass')
+                            # Add ArpPending to list then process it
                             self.layer2_forward_list.append(arp_thing)
-                            print('len: ' + str(len(self.layer2_forward_list)))
-                            print('three')
-                            # arp_stuff = ArpPending(net)
-                            # arp_stuff.egress_dev = pkt[0].dst
-                            # arp_stuff.nexthop = best_entry[2]
-                            # arp_stuff.pkt = pkt
-                            # arp_stuff.last_update = time.time()
-                            # arp_stuff.attempts = 0
-                            #self.layer2_forward_list.append(arp_stuff)
-
-                            # 2. What are we suppsoed to do next?
                             self.process_arp_pending()
-
-                            # arp = pkt.get_header(arp_stuff)
-                            # ipv4_h = pkt.get_header(IPv4)
-                            # reply_handled = False
-                            # if arp:
-                            #     srcIP = arp.senderprotoaddr
-                            #     destIP = arp.targetprotoaddr
-                            #     srcMAC = arp.senderhwaddr
-                            #     arp_response = self.make_arp_request(srcMAC, srcIP, destIP)
-                            #     self.net.send_packet(best_entry[3],arp_response)
-
-                            # TODO: add to cache (map)
-                            #self.arptable[pkt.get_header(IPv4)] = pkt[0].dst
-
-                            #self.net.send_packet(best_entry[3], pkt)
-                            
             else:
                 log_warn("Received Non-IP packet that I don't know how to handle: {}".format(str(pkt)))
-            print('endlen: ' + str(len(self.layer2_forward_list)))
-            print('Finish while loop')
-
     def process_arp_pending(self):
         '''
         Once an ArpPending object has been added to the layer 2 forwarding table,
@@ -321,7 +230,6 @@ class Router(object):
         needs to be sent at all, and if so, handles the logistics of sending and
         potentially resending the request.
         '''
-        print('go')
         def _ipv4addr(intf):
             v4addrs = [i.ip for i in intf.ipaddrs if i.version == 4]
             return v4addrs[0]
@@ -331,93 +239,64 @@ class Router(object):
         log_info("Processing outstanding packets to be ARPed at {}".format(now))
         newlist = []
         while len(self.layer2_forward_list):
-            print('red')
             thisarp = self.layer2_forward_list.pop(0)
-            print('INTERMEDIAT LEN: ' + str(len(self.layer2_forward_list)))
-            print('THISARP: ' + str(thisarp))
             log_debug("Checking {}".format(str(thisarp)))
             log_debug("Current arp table: {}".format(str(self.arptable)))
 
             dstmac = None
-            # Check: do we already know the MAC address? If so, go ahead and forward
+            # Check: do we already know the MAC address of the destination
             if thisarp.pkt[IPv4].dst in self.arptable:
-                print('inside')
                 dstmac = self.arptable[thisarp.pkt[IPv4].dst]
                 log_debug("Already have MAC address for {}->{} - don't need to ARP".format(thisarp.nexthop, dstmac))
-                # **NOTE: you will need to provide an implementation of layer2_forward
+                # Build and send Packet
                 self.layer2_forward(thisarp.egress_dev, dstmac, thisarp.pkt)
+            # Not in final destination not in ARP table, so send ARP request if we haven't timed out.
             else:
-                # Not in ARP table, so send ARP request if we haven't timed out.
+                #Check if there is already a cache for the interface
                 if thisarp.egress_dev not in self.cache:
-                    print('addtocache')
-                    print('NEXTHOP: ' + str(thisarp.nexthop) + ' DEST: ' + str(thisarp.pkt[IPv4].dst))
-                    tabo = int(thisarp.pkt[IPv4].dst) & int(IPv4Address(str(thisarp.nexthop)))
-                    print('INT: ' + str(tabo))
                     self.cache[self.interfaces[thisarp.egress_dev].ethaddr] = [thisarp.pkt, thisarp.egress_dev]
-                    print("JKGDUTAITIUG " + str(thisarp.pkt))
-                    #self.cache[str(IPv4Address(str(thisarp.nexthop)))] = 'extra'
+                # If we haven't yet timed out
                 if thisarp.can_try_again(now):
-                    print('warm')
-                    print(str(self.interfaces[thisarp.egress_dev].ethaddr))
-                    print(str(self.interfaces[thisarp.egress_dev].ipaddr))
-                    print(str(thisarp.nexthop))
-                    print('ter')
-                    print(str(thisarp.pkt[IPv4].dst))
+                    # Priority goes to nexthop etheraddress if we don't know it
                     if IPv4Address(str(thisarp.nexthop)) not in self.arptable:
-                        print('ARP Next Hop: ' + str(thisarp.nexthop))
-                        print(self.arptable)
-                        print()
-                        self.arptable[thisarp.nexthop] = 'TESTING'
-                        print(self.arptable)
-                        print()
                         arpreq = self.make_arp_request(self.interfaces[thisarp.egress_dev].ethaddr,                                            self.interfaces[thisarp.egress_dev].ipaddr, thisarp.nexthop)
+                    # else we want to learn the final destination's etheraddress
                     else:
-                        print('ARP Final Destination')
                         arpreq = self.make_arp_request(self.interfaces[thisarp.egress_dev].ethaddr,                                            self.interfaces[thisarp.egress_dev].ipaddr, thisarp.pkt[IPv4].dst)
-                    
-                    print('save me print statements')
                     p = Packet()
-                    print('warmer')
                     p += arpreq
                     log_info("ARPing for {} ({})".format(thisarp.nexthop, arpreq))
+                    # increment attempt count
                     thisarp.add_attempt()
-                    print('hot')
-                    print('INTERMEDIAT LEN2: ' + str(len(self.layer2_forward_list)))
-                    # **NOTE: you will need to provide an implementation of layer2_forward
+                    # Clear waitlist and then add current ArpPending to waitlist, my implementation only handles one ARP at a time
                     self.arpwaitlist.clear()
                     self.arpwaitlist.append(thisarp)
+                    # Build and send packet
                     self.layer2_forward(thisarp.egress_dev, "ff:ff:ff:ff:ff:ff",
                                     p, xtype=EtherType.ARP)
-                    #newlist.append(thisarp)
+                # If timed out
                 elif thisarp.giveup(now):
-                    print('gaveup')
                     log_warn("Giving up on ARPing {}".format(str(thisarp.nexthop)))
-                print('another loop done')
-
-        #self.layer2_forward_list = newlist
 
     def layer2_forward(self, egress, dstether, a_packet, xtype=EtherType.IP):
-        print('vooid')
+        '''
+        Build a packet that is either IP or ARP then send packet out on egress
+        '''
         eth = Ethernet()
-        print('a')
         eth.src = self.interfaces[egress].ethaddr
         eth.dst = EthAddr(dstether)
-        print('c')
         eth.ethertype = xtype
-        print('b')
-        print(type(a_packet))
-        print(str(a_packet))
         p = Packet()
         p += eth
+        # IP packet must send differnt headers than the ARP
         if xtype == EtherType.IP:
             p += a_packet[IPv4]
             p += a_packet[ICMP]
         else:
             p += a_packet[0]
+            #Arp Packets need to append egress and packet to waitlist so that the packet can be quickly sent when recv_packet times out
             self.arpwaitlist.append(egress)
             self.arpwaitlist.append(p)
-        print('d')
-        print('SENDING: ' + str(p))
         self.net.send_packet(egress, p)
         
 
