@@ -77,7 +77,7 @@ def forwarding_arp_tests():
 
     ttlmatcher = '''lambda pkt: pkt.get_header(IPv4).ttl == 63'''
 
-    s.expect(PacketInputEvent("router-eth0", reqpkt, display=IPv4), 
+    s.expect(PacketInputEvent("router-eth0", reqpkt, display=IPv4),
              "IP packet to be forwarded to 172.16.42.2 should arrive on router-eth0")
     s.expect(PacketOutputEvent("router-eth2", arpreq, display=Arp),
              "Router should send ARP request for 172.16.42.2 out router-eth2 interface")
@@ -160,7 +160,7 @@ def forwarding_arp_tests():
         "Router should try to receive a packet (ARP response), but then timeout")
     s.expect(PacketInputTimeoutEvent(1.5),
         "Router should try to receive a packet (ARP response), but then timeout")
-
+#"""
     return s
 
 scenario = forwarding_arp_tests()
